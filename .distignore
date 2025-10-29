@@ -1,0 +1,11 @@
+.*
+!.htaccess
+node_modules
+src
+tests
+package.json
+package-lock.json
+phpunit.xml
+phpunit.xml.dist
+README.md
+.wp-env.json

@@ -1,0 +1,43 @@
+{
+	"name": "sarailoo/order-categorize",
+	"description": "",
+	"keywords": [ "wordpress", "plugin" ],
+	"homepage": "https://github.com/sarailoo/order-categorize",
+	"type": "wordpress-plugin",
+	"license": "GPL-2.0+",
+	"authors": [
+		{
+			"name": "Reza Sarailoo",
+			"email": "sarailoo.reza@gmail.com"
+		}
+	],
+	"scripts": {
+		"phpcs": "vendor/bin/phpcs . --standard=phpcs.xml --extensions=php",
+		"phpcbf": "vendor/bin/phpcbf .",
+		"language": "wp i18n make-pot . languages/order-categorize.pot",
+		"test": "./vendor/bin/phpunit"
+	},
+	"autoload": {
+		"psr-4": {
+			"OrderCategorize\\": "includes/"
+		}
+	},
+	"autoload-dev": {
+		"psr-4": {
+			"OrderCategorize\\Tests\\Unit\\": "tests/Unit/"
+		}
+	},
+	"require": {
+		"php": ">=8.0"
+	},
+	"config": {
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true
+		}
+	},
+	"require-dev": {
+		"wp-coding-standards/wpcs": "^3.0",
+		"brain/monkey": "2.*",
+		"phpunit/phpunit": "^11.3"
+	}
+}
