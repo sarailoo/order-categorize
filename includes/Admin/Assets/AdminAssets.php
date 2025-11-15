@@ -9,20 +9,21 @@ declare(strict_types=1);
 
 namespace OrderCategorize\Admin\Assets;
 
-use function admin_url;
-use function add_action;
-use function is_rtl;
-use function wp_create_nonce;
-use function wp_enqueue_script;
-use function wp_enqueue_style;
-use function wp_localize_script;
-
+use OrderCategorize\Admin\Page\OrderBrowserPage;
+use OrderCategorize\Settings\SettingsRepository;
 /**
  * Handles registering and enqueueing admin assets.
  *
  * @since 1.1.0
  */
 class AdminAssets {
+	/**
+	 * Tracks whether the missing build notice has been registered.
+	 *
+	 * @var bool
+	 */
+	private static bool $missing_build_notice_registered = false;
+
 	/**
 	 * Register the hooks required to load assets.
 	 *
@@ -46,7 +47,20 @@ class AdminAssets {
 	 * @return void
 	 */
 	public function enqueue( string $hook_suffix ): void {
-		$asset_file = include ORCZ_BUILD_DIR . 'index.asset.php';
+		$target_hook = OrderBrowserPage::get_hook_suffix();
+		if ( empty( $target_hook ) || $hook_suffix !== $target_hook ) {
+			return;
+		}
+
+		$asset_path = ORCZ_BUILD_DIR . 'index.asset.php';
+
+		if ( ! file_exists( $asset_path ) ) {
+			$this->register_missing_build_notice();
+			return;
+		}
+
+		/** @var array<string,mixed> $asset_file */
+		$asset_file = include $asset_path;
 
 		$this->enqueue_scripts( $asset_file );
 		$this->enqueue_styles( $asset_file );
@@ -98,7 +112,7 @@ class AdminAssets {
 
 		wp_enqueue_style(
 			'orcz-admin-style-rtl',
-			ORCZ_BUILD_URL . 'style-index-rtl.css',
+			ORCZ_BUILD_URL . 'index-rtl.css',
 			array(),
 			(string) ( $asset_file['version'] ?? ORCZ_VERSION )
 		);
@@ -112,5 +126,66 @@ class AdminAssets {
 	 * @return void
 	 */
 	private function localize_script(): void {
+		wp_localize_script(
+			'orcz-admin-script',
+			'orderCategorize',
+			array(
+				'rootId'        => OrderBrowserPage::ROOT_NODE_ID,
+				'restRoot'      => esc_url_raw( rest_url( 'order-categorize/v1' ) ),
+				'nonce'         => wp_create_nonce( 'wp_rest' ),
+				'settings'      => SettingsRepository::get(),
+				'i18n'          => array(
+					'loading'          => esc_html__( 'Loading...', 'order-categorize' ),
+					'emptyStep'        => esc_html__( 'No data available for this selection.', 'order-categorize' ),
+					'backLabel'        => esc_html__( 'Back', 'order-categorize' ),
+					'ordersButton'     => esc_html__( 'View in WooCommerce orders', 'order-categorize' ),
+					'ordersHeading'    => esc_html__( 'Matching orders', 'order-categorize' ),
+					'stepHeading'      => esc_html__( 'Choose an item to drill down', 'order-categorize' ),
+					'initialHeading'   => esc_html__( 'Select a product to review its orders.', 'order-categorize' ),
+					'errorFetching'    => esc_html__( 'We were unable to load the data. Please try again.', 'order-categorize' ),
+					'resetFilters'     => esc_html__( 'Start over', 'order-categorize' ),
+					'ordersTableEmpty' => esc_html__( 'No orders match the chosen filters.', 'order-categorize' ),
+					'rootLabel'        => esc_html__( 'Products', 'order-categorize' ),
+					'customerLabel'    => esc_html__( 'Customer', 'order-categorize' ),
+					'statusLabel'      => esc_html__( 'Status', 'order-categorize' ),
+					'totalLabel'       => esc_html__( 'Total', 'order-categorize' ),
+					'dateLabel'        => esc_html__( 'Date', 'order-categorize' ),
+					'actionsLabel'     => esc_html__( 'Actions', 'order-categorize' ),
+					'viewOrderLabel'   => esc_html__( 'View order', 'order-categorize' ),
+				),
+			)
+		);
+	}
+
+	/**
+	 * Ensure the missing asset notice is registered only once.
+	 *
+	 * @return void
+	 */
+	private function register_missing_build_notice(): void {
+		if ( self::$missing_build_notice_registered ) {
+			return;
+		}
+
+		self::$missing_build_notice_registered = true;
+
+		add_action(
+			'admin_notices',
+			static function () {
+				?>
+				<div class="notice notice-warning">
+					<p>
+						<?php
+						printf(
+							/* translators: %s plugin name. */
+							esc_html__( '%s assets are missing. Run the build step before using the plugin.', 'order-categorize' ),
+							'<strong>' . esc_html__( 'Order Categorize', 'order-categorize' ) . '</strong>'
+						);
+						?>
+					</p>
+				</div>
+				<?php
+			}
+		);
 	}
 }
