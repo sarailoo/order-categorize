@@ -37,7 +37,7 @@ class SettingsPage {
 	 * @return void
 	 */
 	public static function register(): void {
-		add_action( 'admin_menu', array( __CLASS__, 'add_page' ), 61 );
+		add_action( 'admin_menu', array( __CLASS__, 'add_page' ), 82 );
 		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
 	}
 
@@ -47,7 +47,7 @@ class SettingsPage {
 	 * @return void
 	 */
 	public static function add_page(): void {
-		self::$hook_suffix = add_submenu_page(
+		$hook = add_submenu_page(
 			'woocommerce',
 			esc_html__( 'Order Categorize Settings', 'order-categorize' ),
 			esc_html__( 'Order Categorize Settings', 'order-categorize' ),
@@ -55,6 +55,8 @@ class SettingsPage {
 			self::MENU_SLUG,
 			array( __CLASS__, 'render' )
 		);
+
+		self::$hook_suffix = is_string( $hook ) ? $hook : null;
 	}
 
 	/**
@@ -144,24 +146,34 @@ class SettingsPage {
 		$depth = absint( $raw['depth'] );
 		$depth = max( 2, min( 4, $depth ) );
 
-		$attributes = array();
+		$attribute_choices = array(
+			1 => '',
+			2 => '',
+		);
+
 		for ( $i = 1; $i <= 2; $i++ ) {
-			if ( empty( $raw[ "attribute_step_{$i}" ] ) ) {
-				continue;
-			}
-			$attributes[] = sanitize_key( (string) $raw[ "attribute_step_{$i}" ] );
+			$value = sanitize_key( (string) ( $raw[ "attribute_step_{$i}" ] ?? '' ) );
+			$attribute_choices[ $i ] = $value;
 		}
 
-		$hierarchy   = array(
+		$hierarchy = array(
 			array( 'type' => 'product' ),
 		);
-		$attributes  = array_slice( $attributes, 0, max( 0, $depth - 2 ) );
-		foreach ( $attributes as $attribute ) {
+
+		if ( $depth >= 3 && '' !== $attribute_choices[1] ) {
 			$hierarchy[] = array(
 				'type'      => 'attribute',
-				'attribute' => $attribute,
+				'attribute' => $attribute_choices[1],
 			);
 		}
+
+		if ( $depth >= 4 && '' !== $attribute_choices[2] ) {
+			$hierarchy[] = array(
+				'type'      => 'attribute',
+				'attribute' => $attribute_choices[2],
+			);
+		}
+
 		$hierarchy[] = array( 'type' => 'orders' );
 
 		$statuses = $raw['order_statuses'];
@@ -171,9 +183,11 @@ class SettingsPage {
 
 		return SettingsRepository::normalize(
 			array(
-				'depth'          => $depth,
-				'hierarchy'      => $hierarchy,
-				'order_statuses' => $statuses,
+				'depth'            => $depth,
+				'hierarchy'        => $hierarchy,
+				'order_statuses'   => $statuses,
+				'attribute_step_1' => $attribute_choices[1],
+				'attribute_step_2' => $attribute_choices[2],
 			)
 		);
 	}
@@ -234,12 +248,14 @@ class SettingsPage {
 	 */
 	public static function render_attribute_field( array $args ): void {
 		$index     = absint( $args['index'] ?? 1 );
-		$settings  = SettingsRepository::get();
-		$hierarchy = $settings['hierarchy'] ?? array();
-		$selected  = '';
-		// product is first, last is orders. Attributes live in between.
-		if ( isset( $hierarchy[ $index ] ) && 'attribute' === ( $hierarchy[ $index ]['type'] ?? '' ) ) {
-			$selected = (string) ( $hierarchy[ $index ]['attribute'] ?? '' );
+		$settings = SettingsRepository::get();
+		$selected = (string) ( $settings[ "attribute_step_{$index}" ] ?? '' );
+
+		if ( '' === $selected ) {
+			$hierarchy = $settings['hierarchy'] ?? array();
+			if ( isset( $hierarchy[ $index ] ) && 'attribute' === ( $hierarchy[ $index ]['type'] ?? '' ) ) {
+				$selected = (string) ( $hierarchy[ $index ]['attribute'] ?? '' );
+			}
 		}
 
 		$attributes = wc_get_attribute_taxonomies();

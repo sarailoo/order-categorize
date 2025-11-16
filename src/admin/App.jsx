@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from '@wordpress/element';
+import { useEffect, useMemo, useRef, useState } from '@wordpress/element';
 import apiFetch from '@wordpress/api-fetch';
 import { Button, Notice, Spinner } from '@wordpress/components';
 
@@ -52,77 +52,6 @@ const buildFetchUrl = ( tokens ) => {
 
 const isStepActive = ( index, tokensLength ) => index < tokensLength;
 
-const OrdersTable = ( { orders, loading, ordersUrl } ) => {
-	return (
-		<div className="orcz-orders">
-			<div className="orcz-orders__header">
-				<h2>{ i18n.ordersHeading }</h2>
-				{ ordersUrl ? (
-					<Button
-						icon="external"
-						href={ ordersUrl }
-						target="_blank"
-						variant="secondary"
-					>
-						{ i18n.ordersButton }
-					</Button>
-				) : null }
-			</div>
-
-			<div className="orcz-orders__table-wrap">
-				<table className="orcz-orders__table">
-					<thead>
-						<tr>
-							<th scope="col">#</th>
-							<th scope="col">{ i18n.customerLabel || 'Customer' }</th>
-							<th scope="col">{ i18n.statusLabel || 'Status' }</th>
-							<th scope="col">{ i18n.totalLabel || 'Total' }</th>
-							<th scope="col">{ i18n.dateLabel || 'Date' }</th>
-							<th scope="col" className="orcz-orders__actions">
-								{ i18n.actionsLabel || 'Actions' }
-							</th>
-						</tr>
-					</thead>
-					<tbody>
-						{ orders.map( ( order ) => (
-							<tr key={ order.id }>
-								<td data-label="#">{ order.number }</td>
-								<td data-label={ i18n.customerLabel || 'Customer' }>
-									{ order.customer || '—' }
-								</td>
-								<td data-label={ i18n.statusLabel || 'Status' }>
-									<span className="orcz-orders__status">
-										{ order.status?.label || order.status?.key }
-									</span>
-								</td>
-								<td data-label={ i18n.totalLabel || 'Total' }>
-									{ order.total }
-								</td>
-								<td data-label={ i18n.dateLabel || 'Date' }>
-									{ order.date }
-								</td>
-								<td className="orcz-orders__actions">
-									<Button
-										href={ order.edit_url }
-										variant="link"
-										target="_blank"
-									>
-										{ i18n.viewOrderLabel || 'View order' }
-									</Button>
-								</td>
-							</tr>
-						) ) }
-					</tbody>
-				</table>
-
-				{ ! loading && orders.length === 0 ? (
-					<p className="orcz-orders__empty">{ i18n.ordersTableEmpty }</p>
-				) : null }
-			</div>
-		</div>
-	);
-};
-
 const Tiles = ( { items, onSelect } ) => (
 	<div className="orcz-grid">
 		{ items.map( ( item ) => {
@@ -175,57 +104,87 @@ const Breadcrumbs = ( { tokens, breadcrumbs, onReset, onSelect, loading } ) => (
 );
 
 const App = () => {
+	const initialStepData = useRef( config.initialStep || null );
+
 	const [ pathTokens, setPathTokens ] = useState( [] );
-	const [ stepData, setStepData ] = useState( null );
-	const [ loading, setLoading ] = useState( false );
+	const [ stepData, setStepData ] = useState( initialStepData.current );
+	const [ loading, setLoading ] = useState( ! initialStepData.current );
 	const [ error, setError ] = useState( null );
 
 	const pathKey = useMemo( () => pathTokens.join( '|' ), [ pathTokens ] );
 
 	useEffect( () => {
+		if ( pathTokens.length === 0 && initialStepData.current ) {
+			setStepData( initialStepData.current );
+			setLoading( false );
+			setError( null );
+			return undefined;
+		}
+
 		if ( ! restBase ) {
 			setError( new Error( 'Missing REST endpoint.' ) );
 			return undefined;
 		}
 
-		const controller = new AbortController();
+		if ( ! apiFetch ) {
+			setError( new Error( 'REST API client not available.' ) );
+			return undefined;
+		}
+
+		const controller = typeof AbortController === 'undefined' ? null : new AbortController();
 		const url = buildFetchUrl( pathTokens );
 
 		setLoading( true );
 		setError( null );
 
-		apiFetch( { url, signal: controller.signal } )
+		apiFetch( {
+			url,
+			signal: controller ? controller.signal : undefined,
+		} )
 			.then( ( response ) => {
-				if ( ! controller.signal.aborted ) {
-					setStepData( response );
+				if ( controller && controller.signal.aborted ) {
+					return;
+				}
+
+				setStepData( response );
+				if ( pathTokens.length === 0 ) {
+					initialStepData.current = response;
 				}
 			} )
 			.catch( ( fetchError ) => {
-				if ( controller.signal.aborted ) {
+				if ( controller && controller.signal.aborted ) {
 					return;
 				}
 				setError( fetchError );
 			} )
 			.finally( () => {
-				if ( ! controller.signal.aborted ) {
-					setLoading( false );
+				if ( controller && controller.signal.aborted ) {
+					return;
 				}
+				setLoading( false );
 			} );
 
-		return () => controller.abort();
+		return () => {
+			if ( controller ) {
+				controller.abort();
+			}
+		};
 	}, [ restBase, depth, pathKey ] );
 
 	const items = stepData?.items || [];
 	const breadcrumbs = stepData?.breadcrumbs || [];
-	const orders = stepData?.orders || [];
-	const isTerminal = Boolean( stepData?.terminal );
-	const ordersAdminUrl = stepData?.orders_admin_url;
 	const heading =
 		pathTokens.length === 0
 			? i18n.initialHeading
 			: i18n.stepHeading;
 
 	const handleSelectItem = ( item ) => {
+		const ordersLink = item.ordersUrl || item.orders_url;
+		if ( stepData?.next_step_type === 'orders' && ordersLink ) {
+			window.location.href = ordersLink;
+			return;
+		}
+
 		const token = buildToken( item );
 		if ( ! token ) {
 			return;
@@ -240,6 +199,11 @@ const App = () => {
 
 	const handleReset = () => {
 		setPathTokens( [] );
+		if ( initialStepData.current ) {
+			setStepData( initialStepData.current );
+			setError( null );
+			setLoading( false );
+		}
 	};
 
 	return (
@@ -279,7 +243,7 @@ const App = () => {
 				</div>
 			) : null }
 
-			{ ! loading && ! error && ! isTerminal ? (
+			{ ! loading && ! error ? (
 				items.length > 0 ? (
 					<Tiles items={ items } onSelect={ handleSelectItem } />
 				) : (
@@ -287,9 +251,6 @@ const App = () => {
 				)
 			) : null }
 
-			{ ! loading && isTerminal ? (
-				<OrdersTable orders={ orders } loading={ loading } ordersUrl={ ordersAdminUrl } />
-			) : null }
 		</div>
 	);
 };

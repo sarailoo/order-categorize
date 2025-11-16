@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace OrderCategorize\Admin\Assets;
 
 use OrderCategorize\Admin\Page\OrderBrowserPage;
+use OrderCategorize\Orders\OrderHierarchyService;
 use OrderCategorize\Settings\SettingsRepository;
 /**
  * Handles registering and enqueueing admin assets.
@@ -126,6 +127,9 @@ class AdminAssets {
 	 * @return void
 	 */
 	private function localize_script(): void {
+		$service      = new OrderHierarchyService();
+		$initial_step = $service->get_step_data( 1, array() );
+
 		wp_localize_script(
 			'orcz-admin-script',
 			'orderCategorize',
@@ -134,6 +138,7 @@ class AdminAssets {
 				'restRoot'      => esc_url_raw( rest_url( 'order-categorize/v1' ) ),
 				'nonce'         => wp_create_nonce( 'wp_rest' ),
 				'settings'      => SettingsRepository::get(),
+				'initialStep'   => $initial_step,
 				'i18n'          => array(
 					'loading'          => esc_html__( 'Loading...', 'order-categorize' ),
 					'emptyStep'        => esc_html__( 'No data available for this selection.', 'order-categorize' ),

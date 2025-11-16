@@ -40,40 +40,33 @@ class OrderHierarchyService {
 		$breadcrumbs     = $this->build_breadcrumbs( $normalized_path );
 
 		if ( 'orders' === ( $current_step['type'] ?? '' ) || null === $next_step ) {
-			$orders = $this->collect_orders( $normalized_path, $statuses );
-
 			return array(
 				'step'             => $step,
 				'depth'            => $depth,
 				'step_type'        => 'orders',
 				'breadcrumbs'      => $breadcrumbs,
 				'items'            => array(),
-				'orders'           => $this->format_orders( $orders ),
+				'orders'           => array(),
 				'orders_admin_url' => $this->build_orders_admin_url( $normalized_path ),
 				'terminal'         => true,
 			);
 		}
 
 		if ( 'product' === ( $current_step['type'] ?? '' ) ) {
-			$orders = $this->collect_orders( array(), $statuses );
-
 			return array(
 				'step'             => $step,
 				'depth'            => $depth,
 				'step_type'        => 'product',
 				'next_step_type'   => $next_step['type'] ?? null,
 				'breadcrumbs'      => $breadcrumbs,
-				'items'            => $this->aggregate_products( $orders ),
+				'items'            => $this->get_product_step_items( $statuses, $normalized_path, $next_step ),
 				'terminal'         => false,
 			);
 		}
 
 		if ( 'attribute' === ( $current_step['type'] ?? '' ) ) {
-			$product_id = $this->extract_product_id( $normalized_path );
-
 			$attribute = (string) ( $current_step['attribute'] ?? '' );
-			$orders    = $this->collect_orders( $normalized_path, $statuses );
-			$items     = $this->aggregate_attribute( $orders, $attribute, $product_id );
+			$items     = $this->get_attribute_step_items( $normalized_path, $attribute, $statuses, $next_step );
 
 			return array(
 				'step'             => $step,
@@ -83,7 +76,7 @@ class OrderHierarchyService {
 				'next_step_type'   => $next_step['type'] ?? null,
 				'breadcrumbs'      => $breadcrumbs,
 				'items'            => $items,
-				'terminal'         => empty( $items ) && ( ! $next_step || 'orders' === $next_step['type'] ),
+				'terminal'         => false,
 			);
 		}
 
@@ -173,46 +166,53 @@ class OrderHierarchyService {
 	}
 
 	/**
-	 * Aggregate orders by product.
+	 * Retrieve aggregated product counts for the initial step and attach order links when applicable.
 	 *
-	 * @param array<int,WC_Order> $orders Orders to evaluate.
+	 * @param array<int,string>               $statuses  Order statuses to consider.
+	 * @param array<int,array<string,string>> $path       Current path selections.
+	 * @param array<string,string>|null       $next_step  Next step definition.
 	 *
 	 * @return array<int,array<string,mixed>>
 	 */
-	private function aggregate_products( array $orders ): array {
-		$stats = array();
+	private function get_product_step_items( array $statuses, array $path, ?array $next_step ): array {
+		global $wpdb;
 
-		foreach ( $orders as $order ) {
-			$item_products = array();
+		if ( empty( $statuses ) ) {
+			return array();
+		}
 
-			foreach ( $order->get_items( 'line_item' ) as $item ) {
-				if ( ! $item instanceof WC_Order_Item_Product ) {
-					continue;
-				}
+		$placeholders = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
 
-				$product_id = $item->get_product_id();
-				if ( $product_id ) {
-					$item_products[ $product_id ] = true;
-				}
-			}
+		$sql = "
+			SELECT product_meta.meta_value AS product_id, COUNT( DISTINCT items.order_id ) AS order_count
+			FROM {$wpdb->prefix}woocommerce_order_items AS items
+			INNER JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS product_meta
+				ON product_meta.order_item_id = items.order_item_id
+				AND product_meta.meta_key = '_product_id'
+			INNER JOIN {$wpdb->posts} AS posts
+				ON posts.ID = items.order_id
+			WHERE items.order_item_type = 'line_item'
+				AND posts.post_status IN ($placeholders)
+				AND posts.post_type = 'shop_order'
+			GROUP BY product_meta.meta_value
+			ORDER BY order_count DESC
+			LIMIT 200
+		";
 
-			foreach ( array_keys( $item_products ) as $product_id ) {
-				if ( ! isset( $stats[ $product_id ] ) ) {
-					$stats[ $product_id ] = array(
-						'count'    => 0,
-						'orderIds' => array(),
-					);
-				}
+		$prepared = $wpdb->prepare( $sql, $statuses ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$rows     = $wpdb->get_results( $prepared, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
-				if ( ! in_array( $order->get_id(), $stats[ $product_id ]['orderIds'], true ) ) {
-					$stats[ $product_id ]['count']++;
-					$stats[ $product_id ]['orderIds'][] = $order->get_id();
-				}
-			}
+		if ( empty( $rows ) ) {
+			return array();
 		}
 
 		$items = array();
-		foreach ( $stats as $product_id => $data ) {
+		foreach ( $rows as $row ) {
+			$product_id = absint( $row['product_id'] );
+			if ( ! $product_id ) {
+				continue;
+			}
+
 			$product = wc_get_product( $product_id );
 			if ( ! $product ) {
 				continue;
@@ -223,96 +223,159 @@ class OrderHierarchyService {
 				'type'      => 'product',
 				'label'     => $product->get_name(),
 				'thumbnail' => $this->get_product_thumbnail( $product ),
-				'count'     => (int) $data['count'],
+				'count'     => (int) $row['order_count'],
 			);
 		}
 
-		usort(
-			$items,
-			static function ( array $left, array $right ): int {
-				return $right['count'] <=> $left['count'];
-			}
-		);
+		if ( ! $next_step || 'orders' !== ( $next_step['type'] ?? '' ) ) {
+			return $items;
+		}
+
+		foreach ( $items as &$item ) {
+			$selection = array(
+				'type' => 'product',
+				'id'   => (string) $item['id'],
+			);
+
+			$item['orders_url'] = $this->build_orders_admin_url(
+				array_merge(
+					$path,
+					array( $selection )
+				)
+			);
+		}
+		unset( $item );
 
 		return $items;
 	}
 
 	/**
-	 * Aggregate orders for a specific attribute.
+	 * Aggregate attribute values for the next step and attach order links when terminal.
 	 *
-	 * @param array<int,WC_Order> $orders     Orders under consideration.
-	 * @param string              $attribute  Attribute slug (e.g., pa_period).
-	 * @param int|null            $product_id Selected product ID.
+	 * @param array<int,array<string,string>> $path      Current selection path.
+	 * @param string                          $attribute Attribute slug.
+	 * @param array<int,string>               $statuses  Allowed order statuses.
+	 * @param array<string,string>|null       $next_step Next step definition.
 	 *
 	 * @return array<int,array<string,mixed>>
 	 */
-	private function aggregate_attribute( array $orders, string $attribute, ?int $product_id = null ): array {
-		if ( '' === $attribute ) {
+	private function get_attribute_step_items( array $path, string $attribute, array $statuses, ?array $next_step ): array {
+		global $wpdb;
+
+		$product_id = $this->extract_product_id( $path );
+
+		if ( ! $product_id || '' === $attribute || empty( $statuses ) ) {
 			return array();
 		}
 
-		$meta_key = 'attribute_' . $attribute;
+		$placeholders   = implode( ',', array_fill( 0, count( $statuses ), '%s' ) );
+		$table_items    = $wpdb->prefix . 'woocommerce_order_items';
+		$table_meta     = $wpdb->prefix . 'woocommerce_order_itemmeta';
+		$table_posts    = $wpdb->posts;
+		$table_postmeta = $wpdb->postmeta;
+		$attr_key       = esc_sql( 'attribute_' . $attribute );
 
-		$stats = array();
-		foreach ( $orders as $order ) {
-			$values_for_order = array();
+		$joins = array(
+			"INNER JOIN {$table_meta} AS product_meta ON product_meta.order_item_id = items.order_item_id AND product_meta.meta_key = '_product_id'",
+			"LEFT JOIN {$table_meta} AS order_attr_meta ON order_attr_meta.order_item_id = items.order_item_id AND order_attr_meta.meta_key = '{$attr_key}'",
+			"LEFT JOIN {$table_meta} AS variation_id_meta ON variation_id_meta.order_item_id = items.order_item_id AND variation_id_meta.meta_key = '_variation_id'",
+			"LEFT JOIN {$table_postmeta} AS variation_attr_meta ON variation_attr_meta.post_id = variation_id_meta.meta_value AND variation_attr_meta.meta_key = '{$attr_key}'",
+			"INNER JOIN {$table_posts} AS posts ON posts.ID = items.order_id",
+		);
 
-			foreach ( $order->get_items( 'line_item' ) as $item ) {
-				if ( ! $item instanceof WC_Order_Item_Product ) {
-					continue;
-				}
+		$query_args = array_merge( $statuses, array( $product_id ) );
+		$filters    = $this->extract_attribute_filters( $path );
+		$filter_idx = 0;
 
-				if ( $product_id && (int) $item->get_product_id() !== $product_id ) {
-					continue;
-				}
+		$where_filters = array();
+		foreach ( $filters as $filter_attribute => $value ) {
+			$meta_key    = esc_sql( 'attribute_' . $filter_attribute );
+			$attr_alias  = 'filter_attr_' . $filter_idx;
+			$var_id_alias = 'filter_var_id_' . $filter_idx;
+			$var_attr_alias = 'filter_var_attr_' . $filter_idx;
 
-				$value = $item->get_meta( $meta_key, true );
-				if ( ! $value && $item->get_variation_id() ) {
-					$variation = wc_get_product( $item->get_variation_id() );
-					if ( $variation ) {
-						$value = $variation->get_attribute( $attribute );
-					}
-				}
+			$joins[]      = "LEFT JOIN {$table_meta} AS {$attr_alias}
+				ON {$attr_alias}.order_item_id = items.order_item_id
+				AND {$attr_alias}.meta_key = '{$meta_key}'";
+			$joins[]      = "LEFT JOIN {$table_meta} AS {$var_id_alias}
+				ON {$var_id_alias}.order_item_id = items.order_item_id
+				AND {$var_id_alias}.meta_key = '_variation_id'";
+			$joins[]      = "LEFT JOIN {$table_postmeta} AS {$var_attr_alias}
+				ON {$var_attr_alias}.post_id = {$var_id_alias}.meta_value
+				AND {$var_attr_alias}.meta_key = '{$meta_key}'";
 
-				if ( '' === $value || null === $value ) {
-					continue;
-				}
+			$where_filters[] = "COALESCE( {$attr_alias}.meta_value, {$var_attr_alias}.meta_value ) = %s";
+			$query_args[]    = $value;
+			$filter_idx++;
+		}
 
-				$values_for_order[ (string) $value ] = true;
-			}
+		$joins_sql        = implode( "\n", $joins );
+		$filter_where_sql = '';
+		if ( ! empty( $where_filters ) ) {
+			$filter_where_sql = "\n" . implode(
+				"\n",
+				array_map(
+					static fn( $condition ) => 'AND ' . $condition,
+					$where_filters
+				)
+			);
+		}
 
-			foreach ( array_keys( $values_for_order ) as $value ) {
-				if ( ! isset( $stats[ $value ] ) ) {
-					$stats[ $value ] = array(
-						'count'    => 0,
-						'orderIds' => array(),
-					);
-				}
+		$sql = "
+			SELECT COALESCE( order_attr_meta.meta_value, variation_attr_meta.meta_value ) AS attr_value,
+				COUNT( DISTINCT items.order_id ) AS order_count
+			FROM {$table_items} AS items
+			{$joins_sql}
+			WHERE items.order_item_type = 'line_item'
+				AND posts.post_type = 'shop_order'
+				AND posts.post_status IN ($placeholders)
+				AND product_meta.meta_value = %d
+				AND COALESCE( order_attr_meta.meta_value, variation_attr_meta.meta_value ) <> ''
+				{$filter_where_sql}
+			GROUP BY COALESCE( order_attr_meta.meta_value, variation_attr_meta.meta_value )
+			ORDER BY order_count DESC
+			LIMIT 200
+		";
 
-				if ( ! in_array( $order->get_id(), $stats[ $value ]['orderIds'], true ) ) {
-					$stats[ $value ]['count']++;
-					$stats[ $value ]['orderIds'][] = $order->get_id();
-				}
-			}
+		$prepared = $wpdb->prepare( $sql, $query_args ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+		$rows     = $wpdb->get_results( $prepared, ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+		if ( empty( $rows ) ) {
+			return array();
 		}
 
 		$items = array();
-		foreach ( $stats as $value => $data ) {
-			$items[] = array(
+		foreach ( $rows as $row ) {
+			$value = (string) $row['attr_value'];
+			if ( '' === $value ) {
+				continue;
+			}
+
+			$item = array(
 				'id'        => $value,
 				'type'      => 'attribute',
 				'attribute' => $attribute,
 				'label'     => $this->get_attribute_value_label( $attribute, $value ),
-				'count'     => (int) $data['count'],
+				'count'     => (int) $row['order_count'],
 			);
-		}
 
-		usort(
-			$items,
-			static function ( array $left, array $right ): int {
-				return $right['count'] <=> $left['count'];
+			if ( $next_step && 'orders' === ( $next_step['type'] ?? '' ) ) {
+				$item['orders_url'] = $this->build_orders_admin_url(
+					array_merge(
+						$path,
+						array(
+							array(
+								'type'      => 'attribute',
+								'attribute' => $attribute,
+								'value'     => $value,
+							),
+						)
+					)
+				);
 			}
-		);
+
+			$items[] = $item;
+		}
 
 		return $items;
 	}

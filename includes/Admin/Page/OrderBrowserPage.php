@@ -31,7 +31,7 @@ class OrderBrowserPage {
 	 * @return void
 	 */
 	public static function register(): void {
-		add_action( 'admin_menu', array( __CLASS__, 'add_page' ), 60 );
+		add_action( 'admin_menu', array( __CLASS__, 'add_page' ), 81 );
 	}
 
 	/**
@@ -40,7 +40,7 @@ class OrderBrowserPage {
 	 * @return void
 	 */
 	public static function add_page(): void {
-		self::$hook_suffix = add_submenu_page(
+		$hook = add_submenu_page(
 			'woocommerce',
 			esc_html__( 'Order Categorize', 'order-categorize' ),
 			esc_html__( 'Order Categorize', 'order-categorize' ),
@@ -48,6 +48,8 @@ class OrderBrowserPage {
 			'order-categorize',
 			array( __CLASS__, 'render' )
 		);
+
+		self::$hook_suffix = is_string( $hook ) ? $hook : null;
 	}
 
 	/**

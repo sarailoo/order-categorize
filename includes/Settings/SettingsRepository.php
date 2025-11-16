@@ -97,6 +97,8 @@ class SettingsRepository {
 		$normalized['order_statuses']  = self::sanitize_statuses( $settings['order_statuses'] ?? array() );
 		$normalized['depth']           = max( 1, (int) ( $settings['depth'] ?? count( $normalized['hierarchy'] ) ) );
 		$normalized['depth']           = min( $normalized['depth'], count( $normalized['hierarchy'] ) );
+		$normalized['attribute_step_1'] = self::sanitize_attribute_key( $settings['attribute_step_1'] ?? '' );
+		$normalized['attribute_step_2'] = self::sanitize_attribute_key( $settings['attribute_step_2'] ?? '' );
 
 		return $normalized;
 	}
@@ -110,6 +112,8 @@ class SettingsRepository {
 		return array(
 			'depth'          => 3,
 			'order_statuses' => array( 'wc-pending', 'wc-processing' ),
+			'attribute_step_1' => '',
+			'attribute_step_2' => '',
 			'hierarchy'      => array(
 				array(
 					'type' => 'product',
@@ -211,5 +215,18 @@ class SettingsRepository {
 		}
 
 		return array_values( array_unique( $clean ) );
+	}
+
+	/**
+	 * Sanitize a stored attribute selection key.
+	 *
+	 * @param mixed $value Raw attribute key.
+	 *
+	 * @return string
+	 */
+	private static function sanitize_attribute_key( $value ): string {
+		$value = sanitize_key( (string) $value );
+
+		return $value;
 	}
 }
